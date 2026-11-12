@@ -36,6 +36,7 @@ export const CameraCapture: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const simCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const mobileFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [activeViewId, setActiveViewId] = useState<string>('front');
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -361,6 +362,92 @@ export const CameraCapture: React.FC = () => {
     }
   };
 
+  // Direct Mobile Camera Capture Handler (Hardware capture attribute: capture="environment")
+  const handleDirectMobileCameraCapture = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setSecurityWarning(null);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = canvasRef.current || document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // Resize to standard resolution for optimal YOLOv8 inspection
+        const maxDim = 1920;
+        let w = img.width;
+        let h = img.height;
+        if (w > maxDim || h > maxDim) {
+          if (w > h) {
+            h = Math.round((h * maxDim) / w);
+            w = maxDim;
+          } else {
+            w = Math.round((w * maxDim) / h);
+            h = maxDim;
+          }
+        }
+        canvas.width = w;
+        canvas.height = h;
+        ctx.drawImage(img, 0, 0, w, h);
+
+        // Anti-tamper / darkness analysis
+        const imgData = ctx.getImageData(0, 0, w, h).data;
+        let totalLum = 0;
+        let darkPixels = 0;
+        let samples = 0;
+        const step = 8;
+        for (let i = 0; i < imgData.length; i += 4 * step) {
+          const r = imgData[i];
+          const g = imgData[i+1];
+          const b = imgData[i+2];
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          totalLum += lum;
+          if (lum < 20) darkPixels++;
+          samples++;
+        }
+        const meanBrightness = totalLum / samples;
+        const blackRatio = darkPixels / samples;
+
+        if (meanBrightness < 32.0 || blackRatio > 0.85) {
+          setSecurityWarning('Security Block: Captured frame is pitch black or lens is obstructed. Please take photo of the bike in proper lighting.');
+          return;
+        }
+
+        setIsFlashing(true);
+        setTimeout(() => setIsFlashing(false), 200);
+
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
+        setCapturedImage(activeViewId, dataUrl);
+
+        // Auto-advance to next uncaptured mandatory view
+        const nextUncaptured = CAMERA_VIEWS.find(
+          (v) => v.mandatory && !capturedImages[v.id] && v.id !== activeViewId
+        );
+        if (nextUncaptured) {
+          setActiveViewId(nextUncaptured.id);
+        }
+      };
+      img.src = event.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+
+    // Reset input so user can capture again
+    e.target.value = '';
+  };
+
+  // Unified shutter handler
+  const handleShutterClick = () => {
+    if (cameraState === 'active' || cameraState === 'simulator') {
+      capturePhoto();
+    } else {
+      mobileFileInputRef.current?.click();
+    }
+  };
+
   const handleRetake = (viewId: string) => {
     removeCapturedImage(viewId);
     setActiveViewId(viewId);
@@ -526,27 +613,73 @@ export const CameraCapture: React.FC = () => {
           </div>
         )}
 
-        {/* State E: Camera Unavailable / Not Detected */}
-        {cameraState === 'unavailable' && (
-          <div className="text-center p-8 text-white space-y-4 max-w-md mx-auto">
-            <div className="w-16 h-16 rounded-full bg-amber-500/20 flex items-center justify-center mx-auto text-amber-500">
-              <AlertTriangle className="w-8 h-8" />
+        {/* If Active View is ALREADY Captured: Show Captured Preview with Retake action */}
+        {capturedImages[activeViewId] && cameraState !== 'active' && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+            <div className="relative max-w-lg w-full max-h-[80%] rounded-2xl overflow-hidden border-2 border-emerald-500/70 shadow-2xl">
+              <img
+                src={capturedImages[activeViewId].image_data}
+                alt={activeViewDef.name}
+                className="w-full h-full object-contain bg-black"
+              />
+              <div className="absolute top-3 left-3 px-3 py-1 rounded-full bg-emerald-600 text-white text-xs font-bold flex items-center gap-1.5 shadow-md">
+                <Check className="w-3.5 h-3.5" />
+                <span>{activeViewDef.name} Angle Captured</span>
+              </div>
             </div>
-            <h3 className="text-lg font-bold">No Camera Detected</h3>
-            <p className="text-xs text-slate-300 leading-relaxed">
-              {cameraError || 'A live webcam or device camera is required for vehicle inspection.'}
+
+            <p className="text-xs text-slate-300 mt-3 text-center">
+              Frame is stored in memory. Tap the shutter button below to retake.
             </p>
-            <p className="text-[11px] text-slate-400">
-              For testing in environments without a physical camera, activate the synthesized optical sensor stream:
-            </p>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => setCameraState('simulator')}
-              leftIcon={<Sparkles className="w-4 h-4" />}
+          </div>
+        )}
+
+        {/* State E: Camera Unavailable / Mobile Direct Hardware Capture */}
+        {!capturedImages[activeViewId] && cameraState === 'unavailable' && (
+          <div className="text-center p-6 text-white space-y-4 max-w-sm mx-auto z-10">
+            <div className="w-16 h-16 rounded-2xl bg-[#1677FF]/20 border border-[#1677FF]/30 flex items-center justify-center mx-auto text-[#1677FF] shadow-lg shadow-blue-500/20">
+              <Camera className="w-8 h-8 animate-pulse" />
+            </div>
+
+            <div>
+              <span className="text-[10px] font-mono uppercase px-2.5 py-0.5 rounded-full bg-blue-500/20 text-blue-300 font-bold tracking-wider">
+                Target Angle: {activeViewDef.name}
+              </span>
+              <h3 className="text-lg font-bold text-white mt-1.5">
+                Device Camera Ready
+              </h3>
+              <p className="text-xs text-slate-300 leading-snug mt-1">
+                {activeViewDef.instruction}
+              </p>
+            </div>
+
+            {/* Direct Hardware Mobile Camera Launch Button */}
+            <button
+              type="button"
+              onClick={() => mobileFileInputRef.current?.click()}
+              className="w-full py-3.5 px-5 rounded-2xl bg-[#1677FF] hover:bg-blue-600 active:scale-95 text-white font-bold text-sm flex items-center justify-center gap-2.5 shadow-ev-glow transition duration-150"
             >
-              Start Camera Simulator Stream
-            </Button>
+              <Camera className="w-5 h-5" />
+              <span>Snap {activeViewDef.name} Photo</span>
+            </button>
+
+            <div className="flex items-center justify-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => setCameraState('simulator')}
+                className="text-[11px] text-slate-400 hover:text-white underline transition"
+              >
+                Use Simulator Stream
+              </button>
+              <span className="text-slate-600">•</span>
+              <button
+                type="button"
+                onClick={startCamera}
+                className="text-[11px] text-blue-400 hover:text-blue-300 underline transition"
+              >
+                Retry WebCam
+              </button>
+            </div>
           </div>
         )}
 
@@ -591,27 +724,34 @@ export const CameraCapture: React.FC = () => {
           </div>
         )}
 
-        {/* Bottom Shutter Bar */}
-        {(cameraState === 'active' || cameraState === 'simulator') && (
-          <div className="absolute bottom-6 inset-x-0 z-20 flex flex-col items-center gap-3">
-            
-            {/* Shutter Button */}
-            <button
-              type="button"
-              onClick={capturePhoto}
-              className="w-18 h-18 sm:w-20 sm:h-20 rounded-full border-4 border-white bg-[#1677FF] hover:bg-[#0E62D9] active:scale-95 shadow-ev-glow transition-all duration-150 flex items-center justify-center group focus:outline-none focus:ring-4 focus:ring-[#1677FF]/50"
-              aria-label={`Capture ${activeViewDef.name}`}
-            >
-              <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full border-2 border-white/80 group-hover:scale-90 transition-transform duration-150 flex items-center justify-center">
-                <Camera className="w-7 h-7 text-white" />
-              </div>
-            </button>
+        {/* Bottom Shutter Bar (Always Visible & Actionable) */}
+        <div className="absolute bottom-5 inset-x-0 z-20 flex flex-col items-center gap-2 pointer-events-auto">
+          {/* Shutter Button */}
+          <button
+            type="button"
+            onClick={handleShutterClick}
+            className="w-18 h-18 sm:w-20 sm:h-20 rounded-full border-4 border-white bg-[#1677FF] hover:bg-[#0E62D9] active:scale-95 shadow-ev-glow transition-all duration-150 flex items-center justify-center group focus:outline-none focus:ring-4 focus:ring-[#1677FF]/50"
+            aria-label={`Capture ${activeViewDef.name}`}
+          >
+            <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-full border-2 border-white/80 group-hover:scale-90 transition-transform duration-150 flex items-center justify-center">
+              <Camera className="w-7 h-7 text-white" />
+            </div>
+          </button>
 
-            <span className="text-white text-xs font-bold drop-shadow-md tracking-wider">
-              TAP TO CAPTURE {activeViewDef.name.toUpperCase()}
-            </span>
-          </div>
-        )}
+          <span className="text-white text-xs font-bold drop-shadow-md tracking-wider">
+            {capturedImages[activeViewId] ? `RETAKE ${activeViewDef.name.toUpperCase()}` : `TAP TO CAPTURE ${activeViewDef.name.toUpperCase()}`}
+          </span>
+        </div>
+
+        {/* Hidden mobile camera capture file input (Direct back camera) */}
+        <input
+          ref={mobileFileInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          onChange={handleDirectMobileCameraCapture}
+        />
       </div>
 
       {/* Hidden processing canvas */}
