@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-brand-bg text-brand-primary min-h-screen font-sans;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F1F5F9;
+}
+::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94A3B8;
+}
+
+/* Reticle / Camera guide animations */
+@keyframes guide-pulse {
+  0%, 100% {
+    opacity: 0.85;
+    border-color: rgba(22, 119, 255, 0.9);
+  }
+  50% {
+    opacity: 0.45;
+    border-color: rgba(22, 119, 255, 0.4);
+  }
+}
+
+.camera-guide-box {
+  animation: guide-pulse 2.5s ease-in-out infinite;
+}
